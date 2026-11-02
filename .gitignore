@@ -1,0 +1,16 @@
+# ---------------------------------------------------------------------------
+# This repository tracks only the two LaptopHub applications.
+# Everything else in the parent folder (AutoDrive demo, scratch files) stays out.
+# ---------------------------------------------------------------------------
+/*
+!/.gitignore
+!/README.md
+!/laptop-hub/
+!/laptop-hub-static/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
