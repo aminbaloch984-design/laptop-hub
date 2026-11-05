@@ -7,8 +7,13 @@
 # keeps working after a reboot without editing any code.
 #
 # Run manually:  powershell -ExecutionPolicy Bypass -File start-public.ps1
-# Auto start:    schtasks /Create /TN "NEW AI public" /SC ONLOGON /RL LIMITED `
-#                  /TR "powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File <this file>" /F
+# Protect mode:  ... start-public.ps1 -Protect   (adds AUTH_TOKEN; visitors must
+#                paste the token in Settings first)
+#
+# Auto start:    the startup shortcut runs it without -Protect, so the public
+#                link opens and answers immediately.
+
+param([switch]$Protect)
 
 $ErrorActionPreference = 'Stop'
 
@@ -43,11 +48,12 @@ if (-not (Test-Port -Port $port)) {
   $nodeExe = Join-Path $env:ProgramFiles 'nodejs\node.exe'
   $serverJs = Join-Path $root 'server\server.js'
   $launchLine = '"{0}" "{1}"' -f $nodeExe, $serverJs
+  $authLine = if ($Protect) { "set AUTH_TOKEN=$token" } else { 'set AUTH_TOKEN=' }
   $lines = @(
     '@echo off',
     "set PORT=$port",
     'set HOST=127.0.0.1',
-    "set AUTH_TOKEN=$token",
+    $authLine,
     "set ALLOWED_ORIGIN=$allowed",
     $launchLine
   )
