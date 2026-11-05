@@ -11,6 +11,10 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+# Native tools (java, keytool, sdkmanager, gradle) write progress to stderr.
+# With Stop, PowerShell turns that into a terminating error, so critical steps
+# below are verified explicitly instead of relying on the preference.
+$PSNativeCommandUseErrorActionPreference = $false
 $here   = Split-Path -Parent $MyInvocation.MyCommand.Path
 $base   = Join-Path $env:LOCALAPPDATA 'newai\android'
 $jdkDir = Join-Path $base 'jdk-17'
@@ -20,6 +24,19 @@ $keystore  = Join-Path $here 'signing.keystore'
 $passFile  = Join-Path $here 'keystore-password.txt'
 
 New-Item -ItemType Directory -Force -Path $base | Out-Null
+
+# Runs a native tool with error handling relaxed, so its stderr chatter does not
+# terminate the script. Success is checked explicitly after each step.
+function Run-Native {
+  param([scriptblock]$Body)
+  $old = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try {
+    & $Body 2>&1
+  } finally {
+    $ErrorActionPreference = $old
+  }
+}
 
 function Get-RemoteFile {
   param([string]$Url, [string]$Out)
@@ -60,7 +77,8 @@ if (-not (Test-Path (Join-Path $jdkDir 'bin\java.exe'))) {
 $env:JAVA_HOME = $jdkDir
 $java  = Join-Path $jdkDir 'bin\java.exe'
 $keytool = Join-Path $jdkDir 'bin\keytool.exe'
-Write-Host ('JDK: ' + (& $java -version 2>&1 | Select-Object -First 1))
+if (-not (Test-Path $java)) { throw 'the JDK did not extract correctly - delete jdk17.zip and rerun' }
+Write-Host ('JDK: ' + ((Run-Native { & $java -version } | Select-Object -First 1) -join ' '))
 
 # ------------------------------------------------------------ Android SDK ----
 if (-not $SkipToolchain) {
@@ -82,14 +100,18 @@ if (-not $SkipToolchain) {
 
   $env:ANDROID_HOME = $sdkDir
   $env:ANDROID_SDK_ROOT = $sdkDir
+  if (-not (Test-Path $sdkManager)) { throw 'the Android command-line tools did not extract correctly' }
 
   Write-Host 'accepting SDK licences'
   $yes = (1..40 | ForEach-Object { 'y' }) -join "`n"
-  $yes | & $sdkManager --sdk_root=$sdkDir --licenses 2>&1 | Out-Null
+  Run-Native { $yes | & $sdkManager --sdk_root=$sdkDir --licenses } | Out-Null
 
-  Write-Host 'installing platform-tools, build-tools 34, platform 34'
-  & $sdkManager --sdk_root=$sdkDir "platform-tools" "platforms;android-36" "build-tools;36.0.0" 2>&1 |
+  Write-Host 'installing platform-tools, build-tools 36, platform 36'
+  Run-Native { & $sdkManager --sdk_root=$sdkDir "platform-tools" "platforms;android-36" "build-tools;36.0.0" } |
     Select-String -Pattern 'done|Install|Error|Warning' | Select-Object -Last 5
+  if (-not (Test-Path (Join-Path $sdkDir 'platforms\android-36'))) {
+    throw 'Android platform 36 is missing - the sdkmanager install failed'
+  }
 
   # local.properties keeps the SDK path out of the committed gradle files.
   "sdk.dir=$($sdkDir -replace '\\','\\')" | Set-Content -Path (Join-Path $here 'local.properties') -Encoding ASCII
@@ -100,10 +122,11 @@ if (-not (Test-Path $keystore)) {
   $chars = 'abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789'.ToCharArray()
   $password = -join (1..24 | ForEach-Object { $chars[(Get-Random -Maximum $chars.Length)] })
   Write-Host 'creating upload keystore'
-  & $keytool -genkeypair -v `
+  Run-Native { & $keytool -genkeypair -v `
     -keystore $keystore -alias newai -keyalg RSA -keysize 2048 -validity 10000 `
     -storepass $password -keypass $password `
-    -dname 'CN=Nabeel Ameen, O=NEW AI, L=Karachi, C=PK' 2>&1 | Out-Null
+    -dname 'CN=Nabeel Ameen, O=NEW AI, L=Karachi, C=PK' } | Out-Null
+  if (-not (Test-Path $keystore)) { throw 'keytool could not create the signing keystore' }
   Set-Content -Path $passFile -Value $password -Encoding ASCII
   Write-Host 'keystore password saved to mobile\keystore-password.txt - back it up!'
 }
@@ -114,7 +137,7 @@ $password = (Get-Content $passFile -Raw).Trim()
 if (-not $password) { throw 'mobile\keystore-password.txt is empty - delete the keystore and rebuild' }
 
 # SHA-256 fingerprint, needed by the Digital Asset Links file.
-$listing = & $keytool -list -v -keystore $keystore -alias newai -storepass $password 2>&1
+$listing = Run-Native { & $keytool -list -v -keystore $keystore -alias newai -storepass $password }
 $shaLine = ($listing | Select-String -Pattern 'SHA256:' | Select-Object -First 1).Line
 $sha = (($shaLine -replace '.*SHA256:\s*', '') -replace '\s', '').ToUpper()
 if (-not $sha) { throw 'could not read the sha256 fingerprint from the keystore' }
@@ -185,16 +208,19 @@ if (-not (Test-Path (Join-Path $gradleDir 'bin\gradle.bat'))) {
 
 $env:ANDROID_HOME = $sdkDir
 $env:ANDROID_SDK_ROOT = $sdkDir
+if (-not (Test-Path (Join-Path $gradleDir 'bin\gradle.bat'))) { throw 'Gradle did not extract correctly' }
 $gradle = Join-Path $gradleDir 'bin\gradle.bat'
 
 Write-Host ''
 Write-Host 'building release bundle'
-& $gradle --no-daemon -p $here `
+$gradleOutput = Run-Native { & $gradle --no-daemon -p $here `
   "-PNEWAI_STORE_FILE=$keystore" `
   "-PNEWAI_STORE_PASSWORD=$password" `
   "-PNEWAI_KEY_ALIAS=newai" `
   "-PNEWAI_KEY_PASSWORD=$password" `
-  assembleRelease bundleRelease
+  assembleRelease bundleRelease }
+$gradleOutput | Select-Object -Last 40 | ForEach-Object { Write-Host $_ }
+if ($LASTEXITCODE -ne 0) { throw "Gradle failed with exit code $LASTEXITCODE" }
 
 $aab = Join-Path $here 'app\build\outputs\bundle\release\app-release.aab'
 $apk = Join-Path $here 'app\build\outputs\apk\release\app-release.apk'
