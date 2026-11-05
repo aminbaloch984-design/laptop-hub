@@ -73,21 +73,56 @@ if (-not (Test-Path $cfExe)) {
     -OutFile $cfExe -TimeoutSec 300
 }
 
-if (-not (Get-Process cloudflared -ErrorAction SilentlyContinue)) {
+function Get-TunnelUrl {
+  foreach ($file in @($cfOut, $cfErr)) {
+    if (-not (Test-Path $file)) { continue }
+    $hit = Select-String -Path $file -Pattern 'https://[a-z0-9-]+\.trycloudflare\.com' -AllMatches |
+      Select-Object -First 1
+    if ($hit) { return $hit.Matches[0].Value }
+  }
+  return $null
+}
+
+function Test-Tunnel {
+  param([string]$TunnelUrl)
+  if (-not $TunnelUrl) { return $false }
+  try {
+    $r = Invoke-WebRequest -UseBasicParsing "$TunnelUrl/api/health" -TimeoutSec 12
+    return $r.StatusCode -eq 200
+  } catch {
+    return $false
+  }
+}
+
+function Start-Tunnel {
   Remove-Item $cfOut, $cfErr -ErrorAction SilentlyContinue
   Start-Process -FilePath $cfExe -WindowStyle Hidden -RedirectStandardOutput $cfOut -RedirectStandardError $cfErr `
     -ArgumentList 'tunnel', '--url', "http://127.0.0.1:$port", '--no-autoupdate'
 }
 
+# A quick tunnel can be reclaimed by Cloudflare mid-day ("Tunnel not found"),
+# so reuse the current one only while it actually answers.
 $url = $null
-for ($i = 0; $i -lt 60 -and -not $url; $i++) {
-  Start-Sleep -Milliseconds 1000
-  foreach ($file in @($cfOut, $cfErr)) {
-    if (-not (Test-Path $file)) { continue }
-    $hit = Select-String -Path $file -Pattern 'https://[a-z0-9-]+\.trycloudflare\.com' -AllMatches |
-      Select-Object -First 1
-    if ($hit) { $url = $hit.Matches[0].Value; break }
+if (Get-Process cloudflared -ErrorAction SilentlyContinue) {
+  $url = Get-TunnelUrl
+  if (-not (Test-Tunnel $url)) {
+    Get-Process cloudflared -ErrorAction SilentlyContinue | Stop-Process -Force
+    Start-Sleep -Seconds 2
+    $url = $null
   }
+}
+
+if (-not $url) {
+  Start-Tunnel
+  for ($i = 0; $i -lt 60 -and -not $url; $i++) {
+    Start-Sleep -Milliseconds 1000
+    $url = Get-TunnelUrl
+  }
+}
+
+# The log may show the address before the edge accepts traffic.
+for ($i = 0; $i -lt 12 -and $url -and -not (Test-Tunnel $url); $i++) {
+  Start-Sleep -Seconds 2
 }
 
 if (-not $url) { throw 'cloudflared did not report a public URL' }
