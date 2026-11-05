@@ -362,7 +362,26 @@ Google Fonts are loaded from a CDN with system-font fallbacks. The interface sti
 
 ---
 
-## 9. Development notes
+## 9. Install on a phone (PWA)
+
+The page is a Progressive Web App: `manifest.webmanifest`, `sw.js` and the PNG icons in the
+project root. Hosting it is enough, there is no build step.
+
+- **Android / Chrome:** open the URL, open the menu, choose **Install app** (or *Add to Home screen*).
+- **iPhone / Safari:** Share → **Add to Home Screen**.
+- The installed app opens full screen without browser chrome, and the interface still loads
+  offline because the service worker caches the shell.
+
+The service worker only registers on `https` or `localhost`, and it never caches `/api/*` or
+`proxy.json` — cached answers would be fake answers. Bump `VERSION` in `sw.js` whenever you
+change `index.html`, `style.css` or `script.js` so old caches are replaced.
+
+`privacy.html` is the policy page linked from Settings; it is also the URL to paste into a
+store listing.
+
+---
+
+## 10. Development notes
 
 - No build step. Edit the three front-end files and refresh.
 - `script.js` is organised into sections: utilities, storage, tools, markdown, chat, transport, permissions, agents, voice, memory, settings, routing, events.
@@ -382,7 +401,7 @@ Google Fonts are loaded from a CDN with system-font fallbacks. The interface sti
 
 ---
 
-## 10. Honest limitations
+## 11. Honest limitations
 
 - NEW AI is a strong personal assistant UI, not a system-level JARVIS. It cannot control your OS, files or other apps without a native bridge you install and trust.
 - Browser speech APIs are powerful but inconsistent across engines and operating systems.

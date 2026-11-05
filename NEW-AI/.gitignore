@@ -1,0 +1,12 @@
+# Android build output and signing material (never commit these)
+mobile/signing.keystore
+mobile/keystore-password.txt
+mobile/local.properties
+mobile/.gradle/
+mobile/build/
+mobile/app/build/
+mobile/*.aab
+mobile/*.apk
+
+# Local logs
+*.log

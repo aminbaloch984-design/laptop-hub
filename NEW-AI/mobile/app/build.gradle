@@ -1,0 +1,54 @@
+﻿plugins {
+    id 'com.android.application'
+}
+
+// Secrets come from build.ps1 as -P properties so they never sit in git.
+def hasSigning = project.hasProperty('NEWAI_STORE_FILE')
+
+android {
+    namespace 'com.nabeelameen.newai'
+    compileSdk 36
+
+    defaultConfig {
+        applicationId 'com.nabeelameen.newai'
+        minSdk 23
+        targetSdk 36
+        versionCode 1
+        versionName '1.0.0'
+        resValue 'string', 'app_name', 'NEW AI'
+    }
+
+    signingConfigs {
+        release {
+            if (hasSigning) {
+                storeFile file(project.property('NEWAI_STORE_FILE'))
+                storePassword project.property('NEWAI_STORE_PASSWORD')
+                keyAlias project.property('NEWAI_KEY_ALIAS')
+                keyPassword project.property('NEWAI_KEY_PASSWORD')
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            shrinkResources false
+            if (hasSigning) signingConfig signingConfigs.release
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    lint {
+        abortOnError false
+    }
+}
+
+dependencies {
+    // Trusted Web Activity host: shows the site full screen with no browser UI.
+    implementation 'com.google.androidbrowserhelper:androidbrowserhelper:2.5.0'
+}
+

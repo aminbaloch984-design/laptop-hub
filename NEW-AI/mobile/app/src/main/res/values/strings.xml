@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="launch_url">https://aminbaloch984-design.github.io/nabeel-ameen/new-ai/</string>
+    <string name="asset_statements">[{&quot;relation&quot;:[&quot;delegate_permission/common.handle_all_urls&quot;],&quot;target&quot;:{&quot;namespace&quot;:&quot;android_app&quot;,&quot;package_name&quot;:&quot;com.nabeelameen.newai&quot;,&quot;sha256_cert_fingerprints&quot;:[&quot;__SHA256__&quot;]}}]</string>
+</resources>
