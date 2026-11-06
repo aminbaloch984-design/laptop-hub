@@ -214,10 +214,29 @@ The model requests a tool with a fenced `tool` JSON block. NEW AI asks for permi
 
 ### Interface
 - Dark dashboard, animated circular core, waveform, live status pills.
-- Chat, Agents, Voice, Memory and Settings views.
+- Chat, Agents, Voice, Studio, Memory and Settings views.
 - Responsive sidebar and layouts for mobile, tablet and desktop.
 - Reduced-motion support.
 - No frameworks, no bundler, no build step.
+
+### Photos and video (Studio)
+- Attach up to four photos in a chat message (camera or gallery). Images are
+  resized to 1280 px and JPEG-compressed in the browser before they are sent, so
+  a phone photo never hits the request limit.
+- The AI can read a photo when the configured provider supports multimodal
+  input. The request limit is 12 MB (`MAX_BODY_BYTES`); only the newest user
+  turn carries pixels, older photos become a text note.
+- **Photo editor** (free, offline): rotate, mirror, brightness, contrast,
+  colour, softness, presets and export size. Download or send the result to
+  chat.
+- **Photo → video** (free, offline): pick photos, choose 9:16 / 1:1 / 16:9,
+  seconds per photo and motion, optionally add music, then record a WebM clip
+  with the browser's `MediaRecorder`. If the encoder returns an empty file at
+  full size, it retries at smaller sizes automatically.
+- **AI edit** (paid, off by default): prompt-based redraw through Google's
+  Gemini image model. Enable it with `GEMINI_IMAGE_MODEL` in `server/.env`.
+  AI video generation (Veo) is not wired up because it needs a paid Google
+  Cloud project; the app says so instead of pretending.
 
 ---
 
