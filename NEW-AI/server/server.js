@@ -75,9 +75,26 @@ const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGIN || '')
 const AUTH_TOKEN = String(process.env.AUTH_TOKEN || '').trim();
 
 const ROOT = path.resolve(__dirname, '..');
-const MAX_BODY_BYTES = 1024 * 1024;
+// Images travel as base64 data URLs, so a 1 MB cap blocked every photo. Keep
+// the default generous but bounded, and let the operator tune it.
+const MAX_BODY_BYTES = Math.min(
+  24 * 1024 * 1024,
+  Math.max(256 * 1024, Number(process.env.MAX_BODY_BYTES) || 12 * 1024 * 1024)
+);
 const MAX_MESSAGES = 200;
 const MAX_TOTAL_CHARS = 500000;
+// Per-image and per-request budgets for inline pictures.
+const MAX_IMAGE_CHARS = 4 * 1024 * 1024;
+const MAX_IMAGES_PER_REQUEST = 12;
+const MAX_IMAGES_PER_MESSAGE = 4;
+
+// Paid-only: image generation/editing through Google's native Gemini image
+// model. Disabled unless GEMINI_IMAGE_MODEL is set, so the UI can say the truth
+// instead of failing halfway.
+const GEMINI_IMAGE_MODEL = String(process.env.GEMINI_IMAGE_MODEL || '').trim();
+const GEMINI_API_BASE = (process.env.GEMINI_API_BASE || 'https://generativelanguage.googleapis.com/v1beta').replace(/\/+$/, '');
+const GEMINI_KEY = String(process.env.GEMINI_API_KEY || API_KEY || '').trim();
+const IMAGE_INPUT_ENABLED = String(process.env.ENABLE_IMAGE_INPUT || 'true').toLowerCase() !== 'false';
 
 /* --------------------------------------------------------------------------
    Helpers
@@ -86,6 +103,7 @@ const MAX_TOTAL_CHARS = 500000;
 function redact(text) {
   let value = String(text == null ? '' : text);
   if (API_KEY) value = value.split(API_KEY).join('[redacted]');
+  if (GEMINI_KEY && GEMINI_KEY !== API_KEY) value = value.split(GEMINI_KEY).join('[redacted]');
   return value;
 }
 
@@ -154,17 +172,65 @@ function readBody(req) {  return new Promise((resolve, reject) => {
   });
 }
 
+const IMAGE_URL_RE = /^data:image\/(png|jpe?g|webp|gif);base64,[A-Za-z0-9+/=\s]+$/i;
+
+// A message's content may be plain text (the common case) or a parts array
+// carrying text plus inline pictures, which is what multimodal providers read.
+function sanitizeContent(content, budget) {
+  if (typeof content === 'string') {
+    const text = content.trim();
+    if (!text) return null;
+    if (text.length > MAX_TOTAL_CHARS) throw new Error('Conversation context is too large.');
+    budget.chars += text.length;
+    return text;
+  }
+  if (!Array.isArray(content)) return null;
+  if (!IMAGE_INPUT_ENABLED) throw new Error('Image input is disabled on this server.');
+  if (content.length > MAX_IMAGES_PER_MESSAGE + 1) throw new Error('Too many parts in one message.');
+
+  const parts = [];
+  let images = 0;
+  for (const part of content) {
+    if (!part || typeof part !== 'object') continue;
+    if (part.type === 'text' && typeof part.text === 'string') {
+      const text = part.text.trim();
+      if (!text) continue;
+      budget.chars += text.length;
+      if (budget.chars > MAX_TOTAL_CHARS) throw new Error('Conversation context is too large.');
+      parts.push({ type: 'text', text });
+      continue;
+    }
+    if (part.type === 'image_url' && part.image_url && typeof part.image_url.url === 'string') {
+      const url = part.image_url.url.trim();
+      if (!IMAGE_URL_RE.test(url)) throw new Error('Only inline PNG, JPEG, WebP or GIF images are supported.');
+      if (url.length > MAX_IMAGE_CHARS) throw new Error('An attached image is too large. Compress it and try again.');
+      images += 1;
+      if (images > MAX_IMAGES_PER_MESSAGE) throw new Error('Too many images in one message.');
+      budget.images += 1;
+      if (budget.images > MAX_IMAGES_PER_REQUEST) throw new Error('Too many images in one conversation turn.');
+      budget.imageChars += url.length;
+      if (budget.imageChars > MAX_BODY_BYTES) throw new Error('The attached images are too large together.');
+      parts.push({ type: 'image_url', image_url: { url } });
+    }
+  }
+  if (!parts.length) return null;
+  // Some providers reject an image-only turn; a short prompt keeps it valid.
+  if (!parts.some((part) => part.type === 'text')) {
+    parts.unshift({ type: 'text', text: 'Describe this image in detail.' });
+  }
+  return parts;
+}
+
 function sanitizeMessages(messages) {
   if (!Array.isArray(messages)) throw new Error('messages must be an array.');
   if (messages.length > MAX_MESSAGES) throw new Error('Too many messages in one request.');
-  let total = 0;
+  const budget = { chars: 0, images: 0, imageChars: 0 };
   const clean = [];
   for (const message of messages) {
     if (!message || !['system', 'user', 'assistant'].includes(message.role)) continue;
-    if (typeof message.content !== 'string' || !message.content.trim()) continue;
-    total += message.content.length;
-    if (total > MAX_TOTAL_CHARS) throw new Error('Conversation context is too large.');
-    clean.push({ role: message.role, content: message.content });
+    const content = sanitizeContent(message.content, budget);
+    if (!content) continue;
+    clean.push({ role: message.role, content });
   }
   if (!clean.length) throw new Error('No usable messages were provided.');
   return clean;
@@ -179,6 +245,13 @@ const STATIC_FILES = {
   '/index.html': { file: 'index.html', type: 'text/html; charset=utf-8' },
   '/style.css': { file: 'style.css', type: 'text/css; charset=utf-8' },
   '/script.js': { file: 'script.js', type: 'application/javascript; charset=utf-8' },
+  '/manifest.webmanifest': { file: 'manifest.webmanifest', type: 'application/manifest+json; charset=utf-8' },
+  '/sw.js': { file: 'sw.js', type: 'application/javascript; charset=utf-8' },
+  '/privacy.html': { file: 'privacy.html', type: 'text/html; charset=utf-8' },
+  '/icon-192.png': { file: 'icon-192.png', type: 'image/png' },
+  '/icon-512.png': { file: 'icon-512.png', type: 'image/png' },
+  '/icon-maskable-512.png': { file: 'icon-maskable-512.png', type: 'image/png' },
+  '/apple-touch-icon.png': { file: 'apple-touch-icon.png', type: 'image/png' },
 };
 
 function serveStatic(req, res, pathname) {
@@ -249,6 +322,9 @@ function handleHealth(req, res) {
     auth: API_KEY ? 'api-key' : ALLOW_NO_KEY ? 'none' : 'missing',
     placeholderKey: Boolean(RAW_API_KEY) && !API_KEY,
     authRequired: Boolean(AUTH_TOKEN),
+    imageInput: IMAGE_INPUT_ENABLED,
+    imageEditing: Boolean(GEMINI_IMAGE_MODEL && GEMINI_KEY),
+    imageModel: GEMINI_IMAGE_MODEL || null,
     uptime: Math.round(process.uptime()),
   });
 }
@@ -432,6 +508,144 @@ async function handleChat(req, res) {
 }
 
 /* --------------------------------------------------------------------------
+   Image generation / editing (paid Gemini image model, optional)
+   -------------------------------------------------------------------------- */
+
+const IMAGE_PART_RE = /^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=\s]+)$/i;
+
+async function handleImage(req, res) {
+  if (req.method !== 'POST') {
+    res.writeHead(405, { Allow: 'POST' });
+    res.end('Method not allowed');
+    return;
+  }
+
+  if (!GEMINI_IMAGE_MODEL || !GEMINI_KEY) {
+    sendJSON(res, 503, {
+      error: {
+        message: 'AI image editing is not enabled on this server.',
+        hint:
+          'Local editing (crop, rotate, light, filters) already works offline in Studio. ' +
+          'For prompt-based AI editing, set GEMINI_IMAGE_MODEL in server/.env and enable billing in Google AI Studio. ' +
+          'AI video generation (Veo) also needs a paid Google Cloud project.',
+      },
+    });
+    return;
+  }
+
+  let payload;
+  try {
+    const raw = await readBody(req);
+    if (!raw) throw new Error('Empty request body.');
+    payload = JSON.parse(raw);
+  } catch (error) {
+    sendJSON(res, error.statusCode || 400, { error: { message: redact(error.message) } });
+    return;
+  }
+
+  const prompt = String(payload.prompt || '').trim();
+  if (!prompt) {
+    sendJSON(res, 400, { error: { message: 'Describe what the image should look like.' } });
+    return;
+  }
+  if (prompt.length > 2000) {
+    sendJSON(res, 400, { error: { message: 'That prompt is too long. Keep it under 2000 characters.' } });
+    return;
+  }
+
+  const parts = [{ text: prompt }];
+  if (payload.image) {
+    const match = String(payload.image).match(IMAGE_PART_RE);
+    if (!match) {
+      sendJSON(res, 400, { error: { message: 'Send the source image as a PNG, JPEG or WebP data URL.' } });
+      return;
+    }
+    const data = match[2].replace(/\s/g, '');
+    if (data.length > MAX_IMAGE_CHARS) {
+      sendJSON(res, 413, { error: { message: 'That source image is too large. Use a smaller one.' } });
+      return;
+    }
+    parts.push({ inline_data: { mime_type: match[1].toLowerCase(), data } });
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.max(REQUEST_TIMEOUT_MS, 180000));
+  try {
+    const url =
+      GEMINI_API_BASE +
+      '/models/' +
+      encodeURIComponent(GEMINI_IMAGE_MODEL) +
+      ':generateContent?key=' +
+      encodeURIComponent(GEMINI_KEY);
+    const upstream = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ role: 'user', parts }],
+        generationConfig: { responseModalities: ['TEXT', 'IMAGE'] },
+      }),
+      signal: controller.signal,
+    });
+
+    const text = await upstream.text();
+    let data = null;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = null;
+    }
+
+    if (!upstream.ok) {
+      const detail =
+        (data && data.error && data.error.message) ||
+        (data && data.promptFeedback && data.promptFeedback.blockReason) ||
+        text;
+      sendJSON(res, upstream.status >= 400 && upstream.status < 600 ? upstream.status : 502, {
+        error: { message: redact(String(detail || 'The image provider rejected the request.')).slice(0, 1200) },
+      });
+      return;
+    }
+
+    const candidate = data && data.candidates && data.candidates[0];
+    const responseParts = (candidate && candidate.content && candidate.content.parts) || [];
+    const imagePart = responseParts.find((part) => part.inlineData && part.inlineData.data);
+    const textPart = responseParts.find((part) => typeof part.text === 'string' && part.text.trim());
+
+    if (!imagePart) {
+      const blocked = candidate && candidate.finishReason;
+      sendJSON(res, 422, {
+        error: {
+          message: blocked
+            ? 'The image model refused this request (' + blocked + '). Try a different photo or wording.'
+            : 'The image model returned no picture. Try again, or use local editing in Studio.',
+        },
+      });
+      return;
+    }
+
+    sendJSON(res, 200, {
+      image:
+        'data:' +
+        (imagePart.inlineData.mimeType || 'image/png') +
+        ';base64,' +
+        imagePart.inlineData.data,
+      text: textPart ? textPart.text : '',
+      model: GEMINI_IMAGE_MODEL,
+    });
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      sendJSON(res, 504, { error: { message: 'The image model timed out. Try a smaller image or a shorter prompt.' } });
+      return;
+    }
+    sendJSON(res, 502, {
+      error: { message: redact('Could not reach the image provider. ' + (error.message || '')).slice(0, 1200) },
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/* --------------------------------------------------------------------------
    Server
    -------------------------------------------------------------------------- */
 
@@ -474,6 +688,16 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       await handleChat(req, res);
+      return;
+    }
+    if (pathname === '/api/image') {
+      if (!isAuthorized(req)) {
+        sendJSON(res, 401, {
+          error: { message: 'Access token required. Add it under Settings → Access token.' },
+        });
+        return;
+      }
+      await handleImage(req, res);
       return;
     }
     serveStatic(req, res, pathname);

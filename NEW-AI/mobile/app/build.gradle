@@ -1,4 +1,4 @@
-﻿plugins {
+plugins {
     id 'com.android.application'
 }
 
@@ -51,4 +51,3 @@ dependencies {
     // Trusted Web Activity host: shows the site full screen with no browser UI.
     implementation 'com.google.androidbrowserhelper:androidbrowserhelper:2.5.0'
 }
-

@@ -1,4 +1,4 @@
-﻿# Builds the Play Store bundle for NEW AI.
+# Builds the Play Store bundle for NEW AI.
 #
 # Run:  powershell -ExecutionPolicy Bypass -File mobile\build.ps1
 #
@@ -103,8 +103,12 @@ if (-not $SkipToolchain) {
   if (-not (Test-Path $sdkManager)) { throw 'the Android command-line tools did not extract correctly' }
 
   Write-Host 'accepting SDK licences'
-  $yes = (1..40 | ForEach-Object { 'y' }) -join "`n"
-  Run-Native { $yes | & $sdkManager --sdk_root=$sdkDir --licenses } | Out-Null
+  # sdkmanager reads answers from stdin; piping through a .bat file directly
+  # from PowerShell does not reach the JVM, so go through cmd and a real file.
+  $yesFile = Join-Path $base 'yes.txt'
+  Set-Content -Path $yesFile -Value (1..80 | ForEach-Object { 'y' }) -Encoding ASCII
+  Run-Native { cmd /c "type `"$yesFile`" | `"$sdkManager`" --sdk_root=$sdkDir --licenses" } | Out-Null
+  if (-not (Test-Path (Join-Path $sdkDir 'licenses'))) { throw 'SDK licences were not accepted' }
 
   Write-Host 'installing platform-tools, build-tools 36, platform 36'
   Run-Native { & $sdkManager --sdk_root=$sdkDir "platform-tools" "platforms;android-36" "build-tools;36.0.0" } |
